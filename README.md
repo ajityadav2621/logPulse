@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # logPulse
 Everything here runs free/local, no cloud accounts needed. Track all your logs at logPulse with efficiency and proficiently.
 =======
@@ -60,4 +59,3 @@ Opens on `http://localhost:5173`, proxying `/api` and `/ws` to the Go backend.
 - API keys per application instead of open ingest endpoint
 - Dashboards/saved searches
 - Swap MongoDB regex search for Elasticsearch/OpenSearch once volume grows
->>>>>>> 8b04118 (feat(frontend): initial frontend setup)
