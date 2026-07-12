@@ -1,0 +1,29 @@
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+
+# Go
+backend/.env
+backend/bin/
+backend/tmp/
+backend/coverage.out
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+.env.*
+
+# Dependency locks (optional)
+# Uncomment if your team doesn't commit them
+# package-lock.json
