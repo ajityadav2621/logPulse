@@ -1,7 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { Menu, Search, Sun, Moon, LogOut, UserCircle, Settings } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import {
   DropdownMenu,
@@ -11,6 +10,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { Kbd, SEARCH_SHORTCUT_ARIA, SEARCH_SHORTCUT_LABEL } from '@/components/search/CommandPalette'
 import { useTheme } from '@/lib/theme-provider'
 import { useAuth } from '@/lib/auth-context'
 import { NotificationsMenu } from './NotificationsMenu'
@@ -25,7 +25,15 @@ function initials(name: string) {
     .toUpperCase() || 'U'
 }
 
-export function Topbar({ onMenuClick, onLogout }: { onMenuClick: () => void; onLogout: () => void }) {
+export function Topbar({
+  onMenuClick,
+  onLogout,
+  onOpenSearch,
+}: {
+  onMenuClick: () => void
+  onLogout: () => void
+  onOpenSearch: () => void
+}) {
   const { theme, toggleTheme } = useTheme()
   const { user } = useAuth()
   const navigate = useNavigate()
@@ -36,17 +44,28 @@ export function Topbar({ onMenuClick, onLogout }: { onMenuClick: () => void; onL
         <Menu className="h-5 w-5" />
       </Button>
 
-      <form
-        className="relative hidden max-w-md flex-1 sm:block"
-        onSubmit={(e) => {
-          e.preventDefault()
-          const q = new FormData(e.currentTarget).get('q') as string
-          navigate(q ? `/logs?q=${encodeURIComponent(q)}` : '/logs')
-        }}
+      {/* Trigger only — the real interaction lives in the command palette
+          (also openable with ⌘K / Ctrl+K anywhere). */}
+      <button
+        type="button"
+        onClick={onOpenSearch}
+        aria-keyshortcuts={SEARCH_SHORTCUT_ARIA}
+        aria-label="Open search"
+        className="hidden h-9 w-full max-w-md flex-1 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm text-muted-foreground transition-colors hover:bg-accent sm:flex"
       >
-        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <Input name="q" placeholder="Search logs — Enter to jump to results" className="pl-8" />
-      </form>
+        <Search className="h-4 w-4 shrink-0" />
+        <span className="truncate">Search logs…</span>
+        <Kbd className="ml-auto">{SEARCH_SHORTCUT_LABEL}</Kbd>
+      </button>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="sm:hidden"
+        onClick={onOpenSearch}
+        aria-label="Open search"
+      >
+        <Search className="h-5 w-5" />
+      </Button>
 
       <div className="ml-auto flex items-center gap-1.5">
         <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label="Toggle theme">

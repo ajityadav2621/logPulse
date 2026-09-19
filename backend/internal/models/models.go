@@ -59,6 +59,11 @@ type User struct {
 	InviteTokenExpires *time.Time `json:"-"`
 	InvitedByID        *uint      `json:"invited_by_id"`
 
+	// TokensInvalidBefore, when set, invalidates every JWT issued before
+	// that moment (the middleware compares the token's iat against it).
+	// Password resets/changes set it to "now"; nil means no restriction.
+	TokensInvalidBefore *time.Time `json:"-"`
+
 	LastLoginAt *time.Time `json:"last_login_at"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
@@ -83,8 +88,8 @@ type AlertRule struct {
 	// CooldownSeconds is the triage window (AI-6): repeat breaches of the
 	// same rule inside the cooldown are recorded as suppressed AlertEvents
 	// instead of paging people again.
-	CooldownSeconds int    `json:"cooldown_seconds"`
-	Enabled         bool   `gorm:"default:true" json:"enabled"`
+	CooldownSeconds int  `json:"cooldown_seconds"`
+	Enabled         bool `gorm:"default:true" json:"enabled"`
 }
 
 // AlertEvent records every breach of an alert rule — fired or suppressed —
@@ -115,31 +120,31 @@ const (
 )
 
 type Incident struct {
-	ID          uint           `gorm:"primaryKey" json:"id"`
-	Title       string         `gorm:"not null" json:"title"`
-	Severity    string         `json:"severity"` // critical | error | warning | info
-	Status      IncidentStatus `gorm:"type:varchar(20);default:open;not null" json:"status"`
-	Source      string         `json:"source"` // anomaly | correlation | alert | manual
-	Summary     string         `gorm:"type:text" json:"summary"`
+	ID       uint           `gorm:"primaryKey" json:"id"`
+	Title    string         `gorm:"not null" json:"title"`
+	Severity string         `json:"severity"` // critical | error | warning | info
+	Status   IncidentStatus `gorm:"type:varchar(20);default:open;not null" json:"status"`
+	Source   string         `json:"source"` // anomaly | correlation | alert | manual
+	Summary  string         `gorm:"type:text" json:"summary"`
 	// Evidence, AffectedApps and AlertEventIDs are JSON-encoded arrays —
 	// kept as text columns to avoid needing a JSONB migration path.
-	Evidence      string     `gorm:"type:text" json:"evidence"`
-	AffectedApps  string     `gorm:"type:text" json:"affected_apps"`
-	AlertEventIDs string     `gorm:"type:text" json:"alert_event_ids"`
-	StartedAt     time.Time  `json:"started_at"`
-	ResolvedAt    *time.Time `json:"resolved_at"`
-	CreatedByUserID *uint    `json:"created_by_user_id"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	Evidence        string     `gorm:"type:text" json:"evidence"`
+	AffectedApps    string     `gorm:"type:text" json:"affected_apps"`
+	AlertEventIDs   string     `gorm:"type:text" json:"alert_event_ids"`
+	StartedAt       time.Time  `json:"started_at"`
+	ResolvedAt      *time.Time `json:"resolved_at"`
+	CreatedByUserID *uint      `json:"created_by_user_id"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 type SavedSearch struct {
-	ID          uint      `gorm:"primaryKey" json:"id"`
-	Name        string    `gorm:"not null" json:"name"`
-	Filters     string    `gorm:"type:text" json:"filters"` // JSON blob of filter params
-	UserID      uint      `json:"user_id"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	Name      string    `gorm:"not null" json:"name"`
+	Filters   string    `gorm:"type:text" json:"filters"` // JSON blob of filter params
+	UserID    uint      `json:"user_id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type Dashboard struct {
@@ -151,25 +156,25 @@ type Dashboard struct {
 }
 
 type DashboardWidget struct {
-	ID           uint      `gorm:"primaryKey" json:"id"`
-	DashboardID  uint      `json:"dashboard_id"`
-	Type         string    `json:"type"` // stat, chart, log_stream
-	Title        string    `json:"title"`
-	Config       string    `gorm:"type:text" json:"config"` // JSON blob
-	Position     int       `json:"position"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	DashboardID uint      `json:"dashboard_id"`
+	Type        string    `json:"type"` // stat, chart, log_stream
+	Title       string    `json:"title"`
+	Config      string    `gorm:"type:text" json:"config"` // JSON blob
+	Position    int       `json:"position"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type Report struct {
-	ID          uint      `gorm:"primaryKey" json:"id"`
-	Name        string    `gorm:"not null" json:"name"`
-	Type        string    `json:"type"` // daily, weekly, monthly, custom
-	Format      string    `json:"format"` // csv, pdf
-	Filters     string    `gorm:"type:text" json:"filters"`
-	UserID      uint      `json:"user_id"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	Name      string    `gorm:"not null" json:"name"`
+	Type      string    `json:"type"`   // daily, weekly, monthly, custom
+	Format    string    `json:"format"` // csv, pdf
+	Filters   string    `gorm:"type:text" json:"filters"`
+	UserID    uint      `json:"user_id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type Notification struct {
@@ -181,6 +186,48 @@ type Notification struct {
 	Read      bool      `gorm:"default:false" json:"read"`
 	CreatedAt time.Time `json:"created_at"`
 }
+
+// PasswordResetToken is a single-use, time-limited token for the
+// forgot-password flow. Only the SHA-256 hash is stored — the raw token
+// exists solely in the email link we send out.
+type PasswordResetToken struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	UserID    uint      `gorm:"index;not null" json:"user_id"`
+	TokenHash string    `gorm:"uniqueIndex;not null" json:"-"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Used      bool      `gorm:"default:false" json:"used"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// EmailNotification is the durable record of one outbound email. Rows are
+// created as "pending" before any send attempt, then flipped to sent/failed
+// — an audit trail that also makes failures visible and retryable.
+type EmailNotification struct {
+	ID             uint       `gorm:"primaryKey" json:"id"`
+	Type           string     `gorm:"type:varchar(40);not null" json:"type"` // password_reset, user_invite, ...
+	RecipientEmail string     `gorm:"index;not null" json:"recipient_email"`
+	Subject        string     `json:"subject"`
+	Body           string     `gorm:"type:text" json:"body"`
+	Status         string     `gorm:"type:varchar(20);default:pending;not null" json:"status"` // pending | sent | failed
+	RelatedUserID  *uint      `gorm:"index" json:"related_user_id"`
+	Attempts       int        `gorm:"default:0" json:"attempts"`
+	SentAt         *time.Time `json:"sent_at"`
+	ErrorMessage   string     `json:"error_message"`
+	CreatedAt      time.Time  `json:"created_at"`
+}
+
+// Email notification statuses.
+const (
+	EmailPending string = "pending"
+	EmailSent    string = "sent"
+	EmailFailed  string = "failed"
+)
+
+// Email notification types.
+const (
+	EmailTypePasswordReset string = "password_reset"
+	EmailTypeUserInvite    string = "user_invite"
+)
 
 // AuditLog records sensitive account actions (role changes, deactivation,
 // invites) for the Audit Logs tab in User Management.

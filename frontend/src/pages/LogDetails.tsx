@@ -1,4 +1,4 @@
-import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import { useLocation, useParams } from 'react-router-dom'
 import { ArrowLeft, Download, Copy, Bookmark } from 'lucide-react'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { LevelBadge } from '@/components/shared/LevelBadge'
@@ -19,8 +19,11 @@ function Field({ label, value, mono = true }: { label: string; value: React.Reac
 
 export default function LogDetails() {
   const { id } = useParams()
-  const location = useNavigate()
-  const log = (location as any)?.state
+  // The log entry arrives via navigation state — there is no per-log fetch
+  // endpoint; /logs/:id is only meaningful with state attached.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const location = useLocation() as any
+  const log = location?.state
 
   if (!log) {
     return (

@@ -1,18 +1,23 @@
 package handlers
 
 import (
+	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
 	"logpulse/internal/auth"
+	"logpulse/internal/email"
 	"logpulse/internal/models"
 )
 
 type AdminHandler struct {
-	DB *gorm.DB
+	DB          *gorm.DB
+	Emails      *email.Service
+	FrontendURL string
 }
 
 // ListUsers handles GET /api/admin/users.
@@ -37,10 +42,9 @@ type createUserReq struct {
 }
 
 // CreateUser handles POST /api/admin/users. It provisions the account in
-// "invited" status and returns a one-time invite link — there's no email
-// service wired up yet, so for now the admin copies/shares this link
-// themselves. Swap the response for a real email send later without
-// changing anything else about the flow.
+// "invited" status. The invite link is emailed to the user when SMTP is
+// configured, and is also returned in the response so admins can share it
+// themselves (or reach the user when email isn't set up).
 func (h *AdminHandler) CreateUser(c *gin.Context) {
 	var req createUserReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -77,6 +81,14 @@ func (h *AdminHandler) CreateUser(c *gin.Context) {
 	}
 
 	recordAudit(h.DB, actorID, "invited_user", &user.ID, user.Email+" as "+string(user.Role))
+
+	if h.Emails != nil {
+		link := strings.TrimRight(h.FrontendURL, "/") + "/accept-invite?token=" + rawToken
+		subject, html := email.UserInviteEmail(link)
+		if err := h.Emails.SendAndRecord(models.EmailTypeUserInvite, user.Email, subject, html, &user.ID); err != nil {
+			log.Printf("invite: could not queue email for user %d: %v", user.ID, err)
+		}
+	}
 
 	c.JSON(http.StatusCreated, gin.H{
 		"user":        toUserResponse(user),

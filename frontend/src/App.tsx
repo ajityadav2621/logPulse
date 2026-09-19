@@ -7,6 +7,8 @@ import AppLayout from '@/components/layout/AppLayout'
 import Login from '@/pages/Login'
 import OAuthCallback from '@/pages/OAuthCallback'
 import AcceptInvite from '@/pages/AcceptInvite'
+import ForgotPassword from '@/pages/ForgotPassword'
+import ResetPassword from '@/pages/ResetPassword'
 import Dashboard from '@/pages/Dashboard'
 import LogExplorer from '@/pages/LogExplorer'
 import LogDetails from '@/pages/LogDetails'
@@ -58,6 +60,17 @@ function Routing() {
       />
       <Route path="/oauth-callback" element={<OAuthCallback />} />
       <Route path="/accept-invite" element={<AcceptInvite />} />
+      <Route
+        path="/forgot-password"
+        element={
+          <RedirectIfAuthed>
+            <ForgotPassword />
+          </RedirectIfAuthed>
+        }
+      />
+      {/* No auth redirect here on purpose — someone following a reset email
+          link must reach this page even if a stale session exists. */}
+      <Route path="/reset-password" element={<ResetPassword />} />
 
       <Route
         element={

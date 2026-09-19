@@ -16,6 +16,7 @@ import {
   LogOut,
   ChevronsUpDown,
   Sparkles,
+  BookOpen,
 } from 'lucide-react'
 import { Logo } from './Logo'
 import { cn } from '@/lib/utils'
@@ -30,7 +31,14 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 
-const NAV_GROUPS: { label: string; items: { to: string; label: string; icon: any }[] }[] = [
+// Developer docs site (Docusaurus) — runs separately, override with VITE_DOCS_URL.
+// Shared with the command palette via lib/api.
+import { DOCS_URL } from '@/lib/api'
+
+const NAV_GROUPS: {
+  label: string
+  items: { to: string; label: string; icon: any; external?: boolean }[]
+}[] = [
   {
     label: 'Monitoring',
     items: [
@@ -55,25 +63,41 @@ const NAV_GROUPS: { label: string; items: { to: string; label: string; icon: any
       { to: '/saved-searches', label: 'Saved Searches', icon: Bookmark },
       { to: '/reports', label: 'Reports', icon: FileBarChart },
       { to: '/users', label: 'Users', icon: Users },
+      { to: DOCS_URL, label: 'Developer Docs', icon: BookOpen, external: true },
     ],
   },
 ]
 
 const NAV_ITEMS = NAV_GROUPS.flatMap((g) => g.items)
 
-function NavItem({ to, label, icon: Icon }: { to: string; label: string; icon: any }) {
+function NavItem({
+  to,
+  label,
+  icon: Icon,
+  external,
+}: {
+  to: string
+  label: string
+  icon: any
+  external?: boolean
+}) {
+  const className = ({ isActive }: { isActive: boolean }) =>
+    cn(
+      'flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medium transition-colors',
+      isActive && !external
+        ? 'bg-primary/15 text-primary'
+        : 'text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-foreground'
+    )
+  if (external) {
+    return (
+      <a href={to} target="_blank" rel="noreferrer" className={className({ isActive: false })}>
+        <Icon className="h-4 w-4 shrink-0" />
+        <span className="truncate">{label}</span>
+      </a>
+    )
+  }
   return (
-    <NavLink
-      to={to}
-      className={({ isActive }) =>
-        cn(
-          'flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medium transition-colors',
-          isActive
-            ? 'bg-primary/15 text-primary'
-            : 'text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-foreground'
-        )
-      }
-    >
+    <NavLink to={to} className={className}>
       <Icon className="h-4 w-4 shrink-0" />
       <span className="truncate">{label}</span>
     </NavLink>

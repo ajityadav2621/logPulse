@@ -90,6 +90,12 @@ services:
       SEED_ADMIN_NAME: ${SEED_ADMIN_NAME:-Admin}
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@logpulse.io}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:?set SEED_ADMIN_PASSWORD in .env}
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-LogPulse}
+      EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-logpulse.notification@gmail.com}
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
       ANOMALY_INTERVAL_SECONDS: ${ANOMALY_INTERVAL_SECONDS:-120}
     networks: [logpulse-net]
@@ -109,6 +115,7 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_URL: ${VITE_API_URL:-http://localhost:8080}
+        VITE_DOCS_URL: ${VITE_DOCS_URL:-http://localhost:3001}
     image: logpulse-frontend:latest
     container_name: logpulse-frontend
     restart: unless-stopped
@@ -118,6 +125,18 @@ services:
     networks: [logpulse-net]
     ports:
       - "${FRONTEND_HOST_PORT:-5173}:80"
+    logging: *default-logging
+
+  logpulse-docs:
+    image: nginx:1.27-alpine
+    container_name: logpulse-docs
+    restart: unless-stopped
+    volumes:
+      - ../docs-site/build:/usr/share/nginx/html:ro
+      - ./nginx/docs.conf:/etc/nginx/conf.d/default.conf:ro
+    networks: [logpulse-net]
+    ports:
+      - "${DOCS_HOST_PORT:-3001}:80"
     logging: *default-logging
 
   # Optional single entrypoint (TLS termination + reverse proxy to the two

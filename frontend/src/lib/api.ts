@@ -3,6 +3,9 @@
 // error the UI can display directly.
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080'
+
+// Developer docs site (Docusaurus) — runs separately; overridable at build.
+export const DOCS_URL = import.meta.env.VITE_DOCS_URL || 'http://localhost:3001'
 const TOKEN_KEY = 'lp_token'
 
 export function getToken(): string | null {
@@ -367,6 +370,36 @@ export function acceptInvite(token: string, name: string, password: string) {
   })
 }
 
+export function forgotPassword(email: string) {
+  return apiFetch<{ message: string }>('/api/auth/forgot-password', {
+    method: 'POST',
+    body: { email },
+    skipAuth: true,
+  })
+}
+
+export function resetPassword(token: string, newPassword: string) {
+  return apiFetch<LoginResponse>('/api/auth/reset-password', {
+    method: 'POST',
+    body: { token, new_password: newPassword },
+    skipAuth: true,
+  })
+}
+
+export function changePassword(currentPassword: string, newPassword: string) {
+  return apiFetch<LoginResponse>('/api/auth/change-password', {
+    method: 'POST',
+    body: { current_password: currentPassword, new_password: newPassword },
+  })
+}
+
+export function updateAccount(updates: { name?: string; email?: string; current_password?: string }) {
+  return apiFetch<{ user: BackendUser; token?: string }>('/api/auth/account', {
+    method: 'PATCH',
+    body: updates,
+  })
+}
+
 export function fetchMe() {
   return apiFetch<BackendUser>('/api/auth/me')
 }
@@ -668,4 +701,35 @@ export function parseAlertText(text: string) {
     method: 'POST',
     body: { text },
   })
+}
+
+// ---- Global search (command palette) ----
+
+export interface SearchItem {
+  id: string
+  kind: 'log' | 'application' | 'incident' | 'doc'
+  title: string
+  subtitle: string
+  /** App route for kinds on this SPA; docs-site path (prefix with DOCS_URL) for kind "doc". */
+  href: string
+  // Log entries carry the full fields because the log detail page renders
+  // from navigation state rather than a per-log fetch.
+  app_name?: string
+  level?: string
+  message?: string
+  timestamp?: string
+}
+
+export interface SearchGroup {
+  label: string
+  items: SearchItem[]
+}
+
+export interface SearchResponse {
+  query: string
+  groups: SearchGroup[]
+}
+
+export function searchAll(q: string, signal?: AbortSignal) {
+  return apiFetch<SearchResponse>(`/api/search?q=${encodeURIComponent(q)}`, { signal })
 }

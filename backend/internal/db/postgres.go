@@ -14,7 +14,7 @@ func ConnectPostgres(dsn string) (*gorm.DB, error) {
 	}
 
 	// AutoMigrate keeps this free/simple — no separate migration tool needed for MVP.
-	if err := conn.AutoMigrate(&models.User{}, &models.Application{}, &models.AlertRule{}, &models.AlertEvent{}, &models.Incident{}, &models.AuditLog{}, &models.SavedSearch{}, &models.Dashboard{}, &models.DashboardWidget{}, &models.Report{}, &models.Notification{}); err != nil {
+	if err := conn.AutoMigrate(&models.User{}, &models.Application{}, &models.AlertRule{}, &models.AlertEvent{}, &models.Incident{}, &models.AuditLog{}, &models.SavedSearch{}, &models.Dashboard{}, &models.DashboardWidget{}, &models.Report{}, &models.Notification{}, &models.PasswordResetToken{}, &models.EmailNotification{}); err != nil {
 		return nil, err
 	}
 

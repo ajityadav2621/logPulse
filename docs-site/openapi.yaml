@@ -1,0 +1,1627 @@
+openapi: 3.0.3
+info:
+  title: LogPulse API
+  version: 1.1.0
+  description: |
+    REST API for LogPulse — a centralized log monitoring platform.
+
+    Three authentication realms exist:
+
+    | Realm | Mechanism | Used by |
+    |-------|-----------|---------|
+    | Dashboard JWT | `Authorization: Bearer <jwt>` (24h expiry, HS256) | everything under `/api/**` except ingest |
+    | Ingest API key | `Authorization: Bearer <application API key>` | `POST /api/logs` only |
+    | OAuth redirect | browser 302 flow | `/api/auth/{google,github}/*` |
+
+    There is no public signup: an admin invites users, and the invited person
+    activates the account via `POST /api/auth/accept-invite` or by signing in
+    with Google/GitHub.
+
+    Errors are always `{"error": "<human readable message>"}`.
+servers:
+  - url: http://localhost:8080
+    description: Local development
+  # INFERRED: production URL depends on your deployment; set your own.
+  - url: https://your-logpulse-host
+    description: Production (replace with your host)
+
+tags:
+  - name: Health
+  - name: Auth
+  - name: Logs
+  - name: Stats & Monitoring
+  - name: Incidents
+  - name: Alerts
+  - name: Applications
+  - name: Saved Searches
+  - name: Dashboards
+  - name: Reports
+  - name: Notifications
+  - name: Admin
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      operationId: getHealth
+      security: []
+      responses:
+        '200':
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, example: ok }
+
+  # ---------------------------------------------------------------- Auth ----
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Email/password sign-in
+      description: >
+        Issues a JWT valid for 24 hours. Deactivated accounts get 403;
+        a pending invite cannot sign in until accepted. Unknown emails and
+        wrong passwords return the same 401 message on purpose.
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: Session created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401':
+          description: Invalid credentials
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '403':
+          description: Invite not accepted yet, or account deactivated
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /api/auth/accept-invite:
+    post:
+      tags: [Auth]
+      summary: Activate an invited account
+      description: >
+        Consumes the one-time invite token (valid 7 days), sets name and
+        password, flips the account to active and returns a JWT.
+      operationId: acceptInvite
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, name, password]
+              properties:
+                token: { type: string, description: Raw token from the invite link }
+                name: { type: string }
+                password: { type: string, minLength: 8 }
+      responses:
+        '200':
+          description: Account activated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '400':
+          description: Invalid/used/expired invite link, or validation error
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Current user profile
+      operationId: getMe
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: The authenticated caller
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/auth/google/login:
+    get:
+      tags: [Auth]
+      summary: Start Google OAuth
+      description: Redirects the browser to Google's consent screen (302).
+      operationId: googleLogin
+      security: []
+      responses:
+        '302':
+          description: Redirect to Google consent screen
+  /api/auth/google/callback:
+    get:
+      tags: [Auth]
+      summary: Google OAuth callback
+      description: >
+        Validates the CSRF state cookie, exchanges the code, then redirects
+        (302) to `{FRONTEND_URL}/oauth-callback?token=<jwt>`. Existing users
+        only — an unknown email is sent back to the login page with
+        `?error=...`. A pending invite is satisfied by OAuth sign-in.
+      operationId: googleCallback
+      security: []
+      parameters:
+        - { name: code, in: query, schema: { type: string } }
+        - { name: state, in: query, schema: { type: string } }
+      responses:
+        '302':
+          description: Redirect to FRONTEND_URL with token or error query param
+  /api/auth/github/login:
+    get:
+      tags: [Auth]
+      summary: Start GitHub OAuth
+      description: Redirects the browser to GitHub's consent screen (302).
+      operationId: githubLogin
+      security: []
+      responses:
+        '302':
+          description: Redirect to GitHub consent screen
+  /api/auth/github/callback:
+    get:
+      tags: [Auth]
+      summary: GitHub OAuth callback
+      description: Same behaviour as the Google callback.
+      operationId: githubCallback
+      security: []
+      parameters:
+        - { name: code, in: query, schema: { type: string } }
+        - { name: state, in: query, schema: { type: string } }
+      responses:
+        '302':
+          description: Redirect to FRONTEND_URL with token or error query param
+
+  # --------------------------------------------------------------- Logs ----
+  /api/logs:
+    post:
+      tags: [Logs]
+      summary: Ingest a log entry
+      description: >
+        Authenticated by the **application API key** (not a user JWT). The
+        message is fingerprinted at ingest (variables normalized) so the
+        clustering endpoints can group near-duplicates. Levels are
+        normalized: `warn`→`warning`, `err`→`error`, `info`→`info`,
+        `crit`→`critical`; any other value is stored as-is.
+      operationId: ingestLog
+      security: [{ ingestApiKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [app_name, level, message]
+              properties:
+                app_name: { type: string, example: payments-api }
+                level:
+                  type: string
+                  description: 'info | warning | error | critical | debug (normalized)'
+                  example: error
+                message: { type: string }
+                meta:
+                  type: object
+                  additionalProperties: true
+                  description: Free-form structured fields; become queryable evidence.
+      responses:
+        '201':
+          description: Stored (and broadcast over /ws/logs)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, example: stored }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401':
+          description: Missing or invalid API key
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '500':
+          description: MongoDB write failed
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    get:
+      tags: [Logs]
+      summary: Search & filter logs
+      description: >
+        Returns the newest 200 matching entries (timestamp descending). All
+        filters are optional and combined with AND.
+      operationId: listLogs
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: app, in: query, schema: { type: string }, description: Exact app_name match }
+        - { name: level, in: query, schema: { type: string }, description: Exact level match }
+        - { name: q, in: query, schema: { type: string }, description: Case-insensitive substring match on message }
+      responses:
+        '200':
+          description: Matching log entries
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 200
+                items: { $ref: '#/components/schemas/LogEntry' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # -------------------------------------------------- Stats & Monitoring ----
+  /api/stats/overview:
+    get:
+      tags: [Stats & Monitoring]
+      summary: Dashboard headline stats
+      description: 24h log/error totals, error-rate delta vs the previous day, active app count, plus Postgres counters (open incidents, suppressed alerts in the last hour).
+      operationId: getOverview
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Overview snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StatsOverview' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/stats/timeseries:
+    get:
+      tags: [Stats & Monitoring]
+      summary: Volume timeseries
+      description: >
+        Fixed-width zero-filled buckets. Bucketing is computed in Go from
+        per-minute Mongo groups, so it works on any MongoDB version.
+      operationId: getTimeseries
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: app, in: query, schema: { type: string } }
+        - { name: hours, in: query, schema: { type: integer, default: 24, maximum: 720 }, description: Lookback window }
+        - name: bucket
+          in: query
+          schema: { type: string, enum: [minute, hour, day], default: hour }
+      responses:
+        '200':
+          description: Chronological buckets
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/TimeseriesPoint' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/stats/top-apps:
+    get:
+      tags: [Stats & Monitoring]
+      summary: Busiest applications
+      operationId: getTopApps
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: hours, in: query, schema: { type: integer, default: 24 } }
+      responses:
+        '200':
+          description: Up to 8 apps, total volume descending
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 8
+                items: { $ref: '#/components/schemas/TopApp' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/stats/levels:
+    get:
+      tags: [Stats & Monitoring]
+      summary: Level counts over a window
+      operationId: getLevelCounts
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: hours, in: query, schema: { type: integer, default: 24 } }
+        - { name: app, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: 'Map of level → count, e.g. {"error": 607, "info": 7488}'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/health/apps:
+    get:
+      tags: [Stats & Monitoring]
+      summary: Per-application ingest health
+      description: >
+        Status is derived from live log flow: `healthy` (seen in the last
+        15 min, error rate < 5%), `degraded` (error rate ≥ 5%), `offline`
+        (silent > 15 min), `no_data` (nothing ever ingested).
+      operationId: getAppHealth
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: One record per application that has ever logged
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AppHealth' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/clusters:
+    get:
+      tags: [Stats & Monitoring]
+      summary: Failure-signature clusters (AI-1)
+      description: >
+        Groups log lines by their normalized pattern fingerprint. Only
+        entries ingested after fingerprinting shipped have a pattern_hash.
+        Sorted worst-level first, then by count.
+      operationId: getClusters
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: hours, in: query, schema: { type: integer, default: 24 } }
+        - { name: app, in: query, schema: { type: string } }
+        - { name: level, in: query, schema: { type: string } }
+        - { name: min_count, in: query, schema: { type: integer, default: 2, minimum: 1 } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+      responses:
+        '200':
+          description: Clusters, largest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Cluster' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/anomalies:
+    get:
+      tags: [Stats & Monitoring]
+      summary: Live anomaly sweep (AI-2)
+      description: >
+        Computes anomalies on request: the last complete hour vs the same
+        hour-of-day across the past week (volume z-score, error-rate Wald
+        z-test), plus a raw 15-minute silence check. The background detector
+        persists findings as incidents; this endpoint is read-only.
+      operationId: getAnomalies
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Current findings (may be empty)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [results, note]
+                properties:
+                  results:
+                    type: array
+                    items: { $ref: '#/components/schemas/AnomalyResult' }
+                  note: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/forecast:
+    get:
+      tags: [Stats & Monitoring]
+      summary: Volume forecast, next 24h (AI-7)
+      description: >
+        Linear trend + hour-of-day profile over the past week; the band is
+        ±1.5σ of fit residuals. Needs at least 24h of history — otherwise
+        `points` is empty and `note` explains why.
+      operationId: getForecast
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: app, in: query, schema: { type: string }, description: Omit for all apps }
+      responses:
+        '200':
+          description: Forecast with trailing history
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Forecast' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ------------------------------------------------------------ Incidents ----
+  /api/incidents:
+    get:
+      tags: [Incidents]
+      summary: List incidents
+      description: Newest first, max 200. Without a status filter, all statuses are returned.
+      operationId: listIncidents
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [active, open, acknowledged, resolved] }
+          description: '`active` = open + acknowledged.'
+      responses:
+        '200':
+          description: Incident list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Incident' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Incidents]
+      summary: Declare an incident manually
+      operationId: createIncident
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string }
+                severity: { type: string, enum: [critical, error, warning, info], default: error }
+                affected_apps:
+                  type: string
+                  description: JSON-encoded array of app names, e.g. '["api","worker"]'
+                summary: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Incident' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/incidents/{id}:
+    get:
+      tags: [Incidents]
+      summary: Get one incident
+      operationId: getIncident
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IncidentId' }]
+      responses:
+        '200':
+          description: The incident
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Incident' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Incidents]
+      summary: Update status / severity / fields
+      description: >
+        Setting status to `resolved` stamps `resolved_at`; moving back to
+        open/acknowledged clears it.
+      operationId: updateIncident
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IncidentId' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string, enum: [open, acknowledged, resolved] }
+                severity: { type: string, enum: [critical, error, warning, info] }
+                title: { type: string }
+                summary: { type: string }
+      responses:
+        '200':
+          description: Updated incident
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Incident' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/incidents/{id}/analysis:
+    get:
+      tags: [Incidents]
+      summary: Root-cause analysis (AI-5)
+      description: >
+        Heuristic, evidence-first analysis computed on request: 5-minute
+        timeline, dominant failure signatures, structured-field hints, and
+        ranked hypotheses. Every hypothesis cites the log lines it is based
+        on and is a suggestion, never an auto-action.
+      operationId: getIncidentAnalysis
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IncidentId' }]
+      responses:
+        '200':
+          description: Analysis
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CopilotAnalysis' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # --------------------------------------------------------------- Alerts ----
+  /api/alerts:
+    get:
+      tags: [Alerts]
+      summary: List alert rules
+      operationId: listAlerts
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: application_id, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: Rules with the resolved application name
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AlertRuleView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Alerts]
+      summary: Create an alert rule
+      operationId: createAlert
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [application_id, level, threshold, window_seconds]
+              properties:
+                application_id: { type: integer }
+                name: { type: string, description: 'Defaults to "<level> threshold" when omitted' }
+                level: { type: string, example: error }
+                keyword: { type: string, description: Optional substring match }
+                threshold: { type: integer, minimum: 1 }
+                window_seconds: { type: integer, minimum: 1 }
+                cooldown_seconds:
+                  type: integer
+                  description: 'Repeat breaches inside the cooldown are recorded but suppressed (AI-6). Defaults to 300.'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertRule' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/alerts/parse:
+    post:
+      tags: [Alerts]
+      summary: Parse plain language into a draft rule (AI-8)
+      description: >
+        Deterministic parser — no LLM, no data leaves the deployment. Returns
+        a draft for human review; nothing is activated until you POST it to
+        `/api/alerts`.
+      operationId: parseAlert
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  example: Alert me when payments-api has more than 5 errors mentioning timeout within 2 minutes
+      responses:
+        '200':
+          description: Draft rule plus the matched application id (or null)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  draft: { $ref: '#/components/schemas/ParsedAlertDraft' }
+                  application_id:
+                    type: integer
+                    nullable: true
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /api/alerts/{id}:
+    patch:
+      tags: [Alerts]
+      summary: Update a rule (partial)
+      operationId: updateAlert
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/AlertId' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                level: { type: string }
+                keyword: { type: string }
+                threshold: { type: integer }
+                window_seconds: { type: integer }
+                cooldown_seconds: { type: integer }
+                enabled: { type: boolean }
+      responses:
+        '200':
+          description: Updated rule
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertRule' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Alerts]
+      summary: Delete a rule
+      operationId: deleteAlert
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/AlertId' }]
+      responses:
+        '200': { $ref: '#/components/responses/Deleted' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/alerts/events:
+    get:
+      tags: [Alerts]
+      summary: Alert trigger history
+      description: Newest first, max 100. Includes suppressed (triaged) events.
+      operationId: listAlertEvents
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: rule_id, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: Events
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AlertEvent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # --------------------------------------------------------- Applications ----
+  /api/applications:
+    get:
+      tags: [Applications]
+      summary: List registered applications (with API keys)
+      operationId: listApplications
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Applications, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Application' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Applications]
+      summary: Register an application
+      description: Generates a fresh API key (crypto/rand, 64 hex chars).
+      operationId: createApplication
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        '201':
+          description: Created — store the api_key now; it is shown in the list later too
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Application' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ------------------------------------------------------- Saved Searches ----
+  /api/saved-searches:
+    get:
+      tags: [Saved Searches]
+      summary: List the caller's saved searches
+      operationId: listSavedSearches
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Searches, updated_at descending
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SavedSearch' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Saved Searches]
+      summary: Save a filter combination
+      description: '`filters` is a JSON blob of query params (e.g. `{"level":"error","q":"timeout"}`).'
+      operationId: createSavedSearch
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, filters]
+              properties:
+                name: { type: string }
+                filters: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SavedSearch' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/saved-searches/{id}:
+    patch:
+      tags: [Saved Searches]
+      summary: Rename or update filters (owner only)
+      operationId: updateSavedSearch
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/SavedSearchId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, filters]
+              properties:
+                name: { type: string }
+                filters: { type: string }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SavedSearch' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Saved Searches]
+      summary: Delete a saved search (owner only)
+      operationId: deleteSavedSearch
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/SavedSearchId' }]
+      responses:
+        '200': { $ref: '#/components/responses/Deleted' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ------------------------------------------------------------ Dashboards ----
+  /api/dashboards:
+    get:
+      tags: [Dashboards]
+      summary: List the caller's dashboards
+      operationId: listDashboards
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Dashboards, updated_at descending
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Dashboard' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Dashboards]
+      summary: Create a dashboard
+      operationId: createDashboard
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dashboard' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/dashboards/{id}:
+    patch:
+      tags: [Dashboards]
+      summary: Rename (owner only)
+      operationId: updateDashboard
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/DashboardId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dashboard' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Dashboards]
+      summary: Delete (owner only)
+      operationId: deleteDashboard
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/DashboardId' }]
+      responses:
+        '200': { $ref: '#/components/responses/Deleted' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/dashboards/widgets:
+    post:
+      tags: [Dashboards]
+      summary: Add a widget
+      operationId: addDashboardWidget
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dashboard_id, type, title]
+              properties:
+                dashboard_id: { type: integer }
+                type: { type: string, description: 'stat, chart, log_stream (free-form; rendered per frontend config)' }
+                title: { type: string }
+                config: { type: string, description: JSON blob of widget config }
+                position: { type: integer, default: 1 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardWidget' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+  /api/dashboards/{id}/widgets:
+    get:
+      tags: [Dashboards]
+      summary: List widgets of a dashboard
+      operationId: listDashboardWidgets
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/DashboardId' }]
+      responses:
+        '200':
+          description: Widgets ordered by position
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/DashboardWidget' }
+  /api/dashboards/widgets/{widget_id}:
+    delete:
+      tags: [Dashboards]
+      summary: Remove a widget
+      operationId: deleteDashboardWidget
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: widget_id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { $ref: '#/components/responses/Deleted' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # --------------------------------------------------------------- Reports ----
+  /api/reports:
+    get:
+      tags: [Reports]
+      summary: List the caller's reports
+      operationId: listReports
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Reports, updated_at descending
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Report' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Reports]
+      summary: Create a report definition
+      operationId: createReport
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, type, format]
+              properties:
+                name: { type: string }
+                type: { type: string, enum: [daily, weekly, monthly, custom] }
+                format: { type: string, enum: [csv, pdf] }
+                filters:
+                  type: string
+                  description: URL-style filter string (k=v&k=v), parsed into a Mongo filter on export
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Report' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/reports/{id}:
+    delete:
+      tags: [Reports]
+      summary: Delete a report (owner only)
+      operationId: deleteReport
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/ReportId' }]
+      responses:
+        '200': { $ref: '#/components/responses/Deleted' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/reports/{id}/export:
+    get:
+      tags: [Reports]
+      summary: Export report data
+      description: >
+        CSV only for now — a report with format `pdf` returns 200 with a JSON
+        error body `"pdf export not yet supported"`.
+      operationId: exportReport
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/ReportId' }]
+      responses:
+        '200':
+          description: CSV attachment (format=csv) or JSON error (format=pdf)
+          content:
+            text/csv:
+              schema: { type: string }
+              example: |
+                Application,Level,Message,Timestamp
+                payments-api,error,failed to charge card,2026-09-19T10:00:00Z
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------- Notifications ----
+  /api/notifications:
+    get:
+      tags: [Notifications]
+      summary: List the caller's notifications
+      description: Newest first, max 50.
+      operationId: listNotifications
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: unread, in: query, schema: { type: string, enum: ['true'] } }
+      responses:
+        '200':
+          description: Notifications
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Notification' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Notifications]
+      summary: Create a notification for the caller
+      operationId: createNotification
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, message, type]
+              properties:
+                title: { type: string }
+                message: { type: string }
+                type: { type: string, description: 'alert, system, account (free-form string)' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Notification' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/notifications/{id}/read:
+    post:
+      tags: [Notifications]
+      summary: Mark one notification read (owner only)
+      operationId: markNotificationRead
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/NotificationId' }]
+      responses:
+        '200':
+          description: The updated notification
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Notification' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/notifications/read-all:
+    post:
+      tags: [Notifications]
+      summary: Mark all the caller's notifications read
+      operationId: markAllNotificationsRead
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Done
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: all read }
+
+  /api/notifications/unread-count:
+    get:
+      tags: [Notifications]
+      summary: Unread notification count
+      operationId: getUnreadCount
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Count
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer, example: 3 }
+
+  # ----------------------------------------------------------- Admin only ----
+  /api/admin/users:
+    get:
+      tags: [Admin]
+      summary: List all users (admin)
+      operationId: adminListUsers
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Users, created_at descending
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/User' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Admin]
+      summary: Invite a user (admin)
+      description: >
+        Creates the account in `invited` status with a one-time invite token
+        (7-day expiry). There is no email service — the response contains the
+        invite link for the admin to share.
+      operationId: adminCreateUser
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, role]
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+                role: { type: string, enum: [admin, editor, viewer] }
+      responses:
+        '201':
+          description: Invited
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+                  invite_link: { type: string, example: /accept-invite?token=… }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Email already registered
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /api/admin/users/{id}/role:
+    patch:
+      tags: [Admin]
+      summary: Change a user's role (admin)
+      operationId: adminUpdateUserRole
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/UserId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, enum: [admin, editor, viewer] }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: updated }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/admin/users/{id}/deactivate:
+    post:
+      tags: [Admin]
+      summary: Deactivate a user (admin)
+      description: Admins cannot deactivate their own account (400).
+      operationId: adminDeactivateUser
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/UserId' }]
+      responses:
+        '200':
+          description: Deactivated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: deactivated }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/admin/users/{id}/reactivate:
+    post:
+      tags: [Admin]
+      summary: Reactivate a user (admin)
+      operationId: adminReactivateUser
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/UserId' }]
+      responses:
+        '200':
+          description: Reactivated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: active }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/admin/audit-logs:
+    get:
+      tags: [Admin]
+      summary: Recent audit log entries (admin)
+      description: Newest first, max 200.
+      operationId: adminListAuditLogs
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Audit entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AuditLog' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/admin/applications/{id}:
+    delete:
+      tags: [Admin]
+      summary: Delete an application (admin)
+      operationId: adminDeleteApplication
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/ApplicationId' }]
+      responses:
+        '200': { $ref: '#/components/responses/Deleted' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Dashboard JWT from /api/auth/login — 24h expiry (HS256).
+    ingestApiKey:
+      type: http
+      scheme: bearer
+      description: Per-application API key from POST /api/applications.
+
+  parameters:
+    IncidentId: { name: id, in: path, required: true, schema: { type: integer } }
+    AlertId: { name: id, in: path, required: true, schema: { type: integer } }
+    SavedSearchId: { name: id, in: path, required: true, schema: { type: integer } }
+    DashboardId: { name: id, in: path, required: true, schema: { type: integer } }
+    ReportId: { name: id, in: path, required: true, schema: { type: integer } }
+    NotificationId: { name: id, in: path, required: true, schema: { type: integer } }
+    UserId: { name: id, in: path, required: true, schema: { type: integer } }
+    ApplicationId: { name: id, in: path, required: true, schema: { type: integer } }
+
+  responses:
+    ValidationError:
+      description: Request body failed validation (message is the validator error)
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Unauthorized:
+      description: Missing/expired JWT ("missing token" / "invalid or expired token")
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Forbidden:
+      description: Authenticated but not allowed (wrong role or not the owner)
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    NotFound:
+      description: Resource does not exist
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Deleted:
+      description: Deletion acknowledged
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status: { type: string, example: deleted }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string, format: email }
+        role: { type: string, enum: [admin, editor, viewer] }
+        status: { type: string, enum: [invited, active, deactivated] }
+        provider: { type: string, enum: [local, google, github] }
+        avatar_url: { type: string }
+        last_login_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+      # Password hash, provider id, and invite token fields are never returned
+      # (userResponse struct in internal/handlers/auth_handler.go).
+
+    LoginResponse:
+      type: object
+      properties:
+        token: { type: string, description: JWT, expires in 24h }
+        user: { $ref: '#/components/schemas/User' }
+
+    LogEntry:
+      type: object
+      properties:
+        id: { type: string, description: Mongo ObjectId }
+        app_name: { type: string }
+        level:
+          type: string
+          description: >
+            Normalized at ingest (warn→warning, err→error, crit→critical);
+            arbitrary values pass through.
+        message: { type: string }
+        meta: { type: object, additionalProperties: true, nullable: true }
+        timestamp: { type: string, format: date-time }
+        pattern_hash:
+          type: string
+          nullable: true
+          description: First 16 hex chars of the SHA-256 of the normalized pattern (AI-1)
+        pattern:
+          type: string
+          nullable: true
+          description: Normalized message template, e.g. "failed to charge card <id> <id>"
+
+    StatsOverview:
+      type: object
+      properties:
+        logs_24h: { type: integer }
+        logs_1h: { type: integer }
+        errors_24h: { type: integer }
+        error_rate_24h: { type: number, format: float, description: errors_24h / logs_24h (0–1) }
+        error_rate_prev_24h: { type: number, format: float, description: Same rate for the previous 24h window }
+        active_apps: { type: integer, description: Distinct apps seen in the last 24h }
+        open_incidents: { type: integer, description: open + acknowledged (Postgres) }
+        open_anomalies: { type: integer, description: Open incidents sourced from anomaly/correlation }
+        suppressed_alerts_1h: { type: integer }
+        logs_per_min: { type: number, format: float, description: logs_1h / 60 }
+
+    TimeseriesPoint:
+      type: object
+      properties:
+        bucket: { type: string, format: date-time, description: RFC3339, UTC }
+        total: { type: integer }
+        critical: { type: integer }
+        error: { type: integer }
+        warning: { type: integer }
+        info: { type: integer }
+        debug: { type: integer }
+        error_rate: { type: number, format: float, description: (error+critical)/total }
+
+    TopApp:
+      type: object
+      properties:
+        app_name: { type: string }
+        total: { type: integer }
+        errors: { type: integer, description: error + critical }
+        error_rate: { type: number, format: float }
+
+    AppHealth:
+      type: object
+      properties:
+        app_name: { type: string }
+        status: { type: string, enum: [healthy, degraded, offline, no_data] }
+        logs_1h: { type: integer }
+        errors_1h: { type: integer }
+        error_rate_1h: { type: number, format: float }
+        logs_24h: { type: integer }
+        last_seen: { type: string, format: date-time, nullable: true }
+
+    Cluster:
+      type: object
+      properties:
+        pattern_hash: { type: string }
+        pattern: { type: string, description: Normalized template with <id>/<num>/<ip>/<uuid> placeholders }
+        sample_message: { type: string, description: First-seen raw message }
+        count: { type: integer }
+        level: { type: string, description: Worst level in the group }
+        apps: { type: array, items: { type: string } }
+        first_seen: { type: string, format: date-time }
+        last_seen: { type: string, format: date-time }
+
+    AnomalyResult:
+      type: object
+      properties:
+        app_name: { type: string }
+        kind: { type: string, enum: [volume_spike, volume_drop, error_rate] }
+        score: { type: number, format: float, description: z-score }
+        observed: { type: number, format: float, description: Count, or rate for error_rate kind }
+        expected: { type: number, format: float, description: Baseline mean, or rate for error_rate kind }
+        message: { type: string }
+        severity: { type: string, enum: [critical, error, warning] }
+        detected_at: { type: string, format: date-time }
+
+    ForecastPoint:
+      type: object
+      properties:
+        bucket: { type: string, format: date-time }
+        predicted: { type: number, format: float }
+        lower: { type: number, format: float, description: predicted − 1.5σ residuals }
+        upper: { type: number, format: float, description: predicted + 1.5σ residuals }
+
+    Forecast:
+      type: object
+      properties:
+        app_name: { type: string }
+        generated_at: { type: string, format: date-time }
+        history_hours: { type: integer, description: Hours of history actually used }
+        current_daily: { type: number, format: float, description: Avg logs/day over history }
+        predicted_daily: { type: number, format: float, description: Sum of the 24 predicted hours }
+        growth_per_day: { type: number, format: float, description: Percent change vs current_daily }
+        estimated_bytes_per_log: { type: number, format: float, description: Measured via $bsonSize on a recent sample }
+        days_to_double: { type: number, format: float, description: '0 = no growth trend' }
+        storage_30d_gb: { type: number, format: float }
+        points:
+          type: array
+          maxItems: 24
+          items: { $ref: '#/components/schemas/ForecastPoint' }
+        baseline:
+          type: array
+          description: Trailing hourly history shown alongside the forecast
+          items: { $ref: '#/components/schemas/TimeseriesPoint' }
+        note: { type: string }
+
+    Incident:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        severity: { type: string, enum: [critical, error, warning, info] }
+        status: { type: string, enum: [open, acknowledged, resolved] }
+        source: { type: string, enum: [anomaly, correlation, alert, manual] }
+        summary: { type: string }
+        evidence: { type: string, description: JSON-encoded array (reserved for stored evidence) }
+        affected_apps: { type: string, description: JSON-encoded array of app names }
+        alert_event_ids: { type: string, description: JSON-encoded array of linked AlertEvent ids (AI-6) }
+        started_at: { type: string, format: date-time }
+        resolved_at: { type: string, format: date-time, nullable: true }
+        created_by_user_id: { type: integer, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CopilotAnalysis:
+      type: object
+      properties:
+        incident_id: { type: integer }
+        title: { type: string }
+        summary: { type: string }
+        timeline:
+          type: array
+          items:
+            type: object
+            properties:
+              bucket: { type: string, format: date-time }
+              total: { type: integer }
+              errors: { type: integer }
+        signatures:
+          type: array
+          items: { $ref: '#/components/schemas/Cluster' }
+        affected_apps: { type: array, items: { type: string } }
+        field_hints:
+          type: array
+          description: Most common meta keys on affected logs; a dominant value gets a hint sentence
+          items:
+            type: object
+            properties:
+              key: { type: string }
+              values: { type: object, additionalProperties: { type: integer } }
+              hint: { type: string }
+        hypotheses:
+          type: array
+          description: Ranked, evidence-cited suggestions — confirm before acting (AI-5)
+          items:
+            type: object
+            properties:
+              statement: { type: string }
+              confidence: { type: number, format: float, description: 0–1 heuristic, not a probability }
+              rationale: { type: string }
+              evidence:
+                type: array
+                items: { $ref: '#/components/schemas/IncidentEvidence' }
+        evidence:
+          type: array
+          description: Raw log lines from the incident window (errors first)
+          items: { $ref: '#/components/schemas/IncidentEvidence' }
+        generated_at: { type: string, format: date-time }
+        note: { type: string }
+
+    IncidentEvidence:
+      type: object
+      properties:
+        app_name: { type: string }
+        level: { type: string }
+        message: { type: string, description: Truncated to 300 chars }
+        timestamp: { type: string, format: date-time }
+        log_id: { type: string }
+
+    AlertRule:
+      type: object
+      properties:
+        id: { type: integer }
+        application_id: { type: integer }
+        name: { type: string }
+        level: { type: string }
+        keyword: { type: string }
+        threshold: { type: integer }
+        window_seconds: { type: integer }
+        cooldown_seconds: { type: integer }
+        enabled: { type: boolean }
+
+    AlertRuleView:
+      allOf:
+        - $ref: '#/components/schemas/AlertRule'
+        - type: object
+          properties:
+            application_name: { type: string, description: Resolved from the applications table }
+
+    AlertEvent:
+      type: object
+      properties:
+        id: { type: integer }
+        rule_id: { type: integer }
+        app_name: { type: string }
+        level: { type: string }
+        keyword: { type: string }
+        count: { type: integer, description: Matching logs in the window at evaluation time }
+        threshold: { type: integer }
+        window_seconds: { type: integer }
+        suppressed: { type: boolean, description: true = triaged by cooldown, no notification sent (AI-6) }
+        incident_id: { type: integer, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    ParsedAlertDraft:
+      type: object
+      properties:
+        application_name: { type: string, description: Empty when no registered app matched }
+        level: { type: string, enum: [critical, error, warning, info, debug] }
+        keyword: { type: string }
+        threshold: { type: integer }
+        window_seconds: { type: integer }
+        cooldown_seconds: { type: integer }
+        confidence: { type: number, format: float, description: 0–1 heuristic }
+        notes: { type: array, items: { type: string }, description: What the parser wants a human to review }
+
+    Application:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        api_key: { type: string, description: Bearer key for POST /api/logs }
+        owner_id: { type: integer }
+        created_at: { type: string, format: date-time }
+
+    SavedSearch:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        filters: { type: string, description: JSON blob of filter params }
+        user_id: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Dashboard:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        user_id: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    DashboardWidget:
+      type: object
+      properties:
+        id: { type: integer }
+        dashboard_id: { type: integer }
+        type: { type: string }
+        title: { type: string }
+        config: { type: string, description: JSON blob }
+        position: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Report:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        type: { type: string, description: daily, weekly, monthly, custom }
+        format: { type: string, description: csv or pdf (pdf export not implemented) }
+        filters: { type: string }
+        user_id: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Notification:
+      type: object
+      properties:
+        id: { type: integer }
+        user_id: { type: integer }
+        title: { type: string }
+        message: { type: string }
+        type: { type: string, description: alert, system, account, incident (free-form) }
+        read: { type: boolean }
+        created_at: { type: string, format: date-time }
+
+    AuditLog:
+      type: object
+      properties:
+        id: { type: integer }
+        actor_id: { type: integer }
+        action: { type: string, description: e.g. invited_user, changed_role, oauth_login, created_application }
+        target_id: { type: integer, nullable: true }
+        detail: { type: string }
+        created_at: { type: string, format: date-time }

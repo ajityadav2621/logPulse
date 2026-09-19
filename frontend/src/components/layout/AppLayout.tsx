@@ -2,11 +2,13 @@ import { useState } from 'react'
 import { Outlet, useNavigate } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
+import { CommandPalette } from '@/components/search/CommandPalette'
 import { Sheet, SheetContent } from '@/components/ui/sheet'
 import { useAuth } from '@/lib/auth-context'
 
 export default function AppLayout() {
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
   const navigate = useNavigate()
   const { logout } = useAuth()
 
@@ -26,11 +28,17 @@ export default function AppLayout() {
       </Sheet>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <Topbar onMenuClick={() => setMobileOpen(true)} onLogout={handleLogout} />
+        <Topbar
+          onMenuClick={() => setMobileOpen(true)}
+          onLogout={handleLogout}
+          onOpenSearch={() => setSearchOpen(true)}
+        />
         <main className="scrollbar-thin flex-1 overflow-y-auto p-4 sm:p-6">
           <Outlet />
         </main>
       </div>
+
+      <CommandPalette open={searchOpen} onOpenChange={setSearchOpen} />
     </div>
   )
 }

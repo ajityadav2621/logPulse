@@ -27,10 +27,22 @@ type Config struct {
 
 	// Bootstrap admin — created on first run if no users exist yet, since
 	// there's no public signup and someone has to be able to log in to
-	// invite everyone else.
+	// invite everyone else. Name/email can be anything (a real person's
+	// email works fine); nothing requires the value "admin".
 	SeedAdminName     string
 	SeedAdminEmail    string
 	SeedAdminPassword string
+
+	// SMTP settings for outbound email (password resets, invites).
+	// Username/Password empty disables email sending — the pipeline then
+	// records notification rows and logs bodies instead of delivering.
+	// Port 465 uses implicit TLS; anything else (e.g. 587) uses STARTTLS.
+	SMTPHost      string
+	SMTPPort      string
+	SMTPUsername  string
+	SMTPPassword  string
+	SMTPFromName  string
+	EmailFromAddr string
 
 	// Advanced monitoring.
 	// AlertWebhookURL posts fired alerts to any JSON endpoint (Slack,
@@ -61,6 +73,15 @@ func Load() *Config {
 		SeedAdminName:     getEnv("SEED_ADMIN_NAME", "Admin"),
 		SeedAdminEmail:    getEnv("SEED_ADMIN_EMAIL", "admin@logpulse.io"),
 		SeedAdminPassword: getEnv("SEED_ADMIN_PASSWORD", "changeme123"),
+
+		// Gmail with an App Password (2FA enabled on the account) is the
+		// default sender; swap host/port/creds for SES/Resend/Mailgun.
+		SMTPHost:      getEnv("SMTP_HOST", "smtp.gmail.com"),
+		SMTPPort:      getEnv("SMTP_PORT", "587"),
+		SMTPUsername:  getEnv("SMTP_USERNAME", ""),
+		SMTPPassword:  getEnv("SMTP_PASSWORD", ""),
+		SMTPFromName:  getEnv("SMTP_FROM_NAME", "LogPulse"),
+		EmailFromAddr: getEnv("EMAIL_FROM_ADDRESS", "logpulse.notification@gmail.com"),
 
 		AlertWebhookURL: getEnv("ALERT_WEBHOOK_URL", ""),
 		AnomalyInterval: getEnvDuration("ANOMALY_INTERVAL_SECONDS", 120),

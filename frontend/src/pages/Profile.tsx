@@ -1,166 +1,314 @@
 import { useState } from 'react'
-import { Copy, Plus, Trash2 } from 'lucide-react'
+import { Eye, EyeOff } from 'lucide-react'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { useTheme } from '@/lib/theme-provider'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { useAuth } from '@/lib/auth-context'
+import { changePassword, setToken, updateAccount, ApiError } from '@/lib/api'
 
-const API_KEYS = [
-  { id: 'k1', name: 'CI Pipeline', prefix: 'lp_live_4f2a...9c1', created: '32 days ago' },
-  { id: 'k2', name: 'Local Dev', prefix: 'lp_test_88bd...e02', created: '5 days ago' },
-]
-
-const SESSIONS = [
-  { id: 's1', device: 'Chrome on macOS', location: 'Mumbai, IN', current: true },
-  { id: 's2', device: 'Safari on iOS', location: 'Mumbai, IN', current: false },
-]
+function initials(name: string) {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]!.toUpperCase())
+    .join('')
+}
 
 export default function Profile() {
-  const { theme, setTheme } = useTheme()
+  const { user, refreshUser } = useAuth()
 
   return (
     <div>
-      <PageHeader title="Profile" description="Your account details and personal preferences." />
+      <PageHeader title="Account" description="Your profile, sign-in details, and password." />
 
       <div className="mb-4 flex items-center gap-4">
-        <Avatar className="h-16 w-16"><AvatarFallback className="text-xl">AS</AvatarFallback></Avatar>
+        <Avatar className="h-14 w-14">
+          {user?.avatar_url ? <img src={user.avatar_url} alt={user.name} /> : undefined}
+          <AvatarFallback className="text-lg">{initials(user?.name ?? '?')}</AvatarFallback>
+        </Avatar>
         <div>
-          <p className="text-lg font-semibold">Aditi Sharma</p>
-          <p className="text-sm text-muted-foreground">aditi.sharma@logpulse.io · Admin</p>
+          <p className="text-lg font-semibold leading-tight">{user?.name}</p>
+          <p className="flex items-center gap-2 text-sm text-muted-foreground">
+            {user?.email}
+            <Badge variant="outline" className="capitalize">
+              {user?.role}
+            </Badge>
+          </p>
         </div>
       </div>
 
       <Tabs defaultValue="general">
         <TabsList>
-          <TabsTrigger value="general">General</TabsTrigger>
+          <TabsTrigger value="general">Profile</TabsTrigger>
           <TabsTrigger value="security">Password</TabsTrigger>
-          <TabsTrigger value="api">API Keys</TabsTrigger>
-          <TabsTrigger value="sessions">Sessions</TabsTrigger>
         </TabsList>
 
         <TabsContent value="general">
-          <Card>
-            <CardContent className="grid grid-cols-1 gap-4 p-5 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label>Full name</Label>
-                <Input defaultValue="Aditi Sharma" />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Email</Label>
-                <Input defaultValue="aditi.sharma@logpulse.io" />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Role</Label>
-                <Input defaultValue="Admin" disabled />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Language</Label>
-                <Select defaultValue="en">
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="en">English</SelectItem>
-                    <SelectItem value="hi">Hindi</SelectItem>
-                    <SelectItem value="es">Spanish</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1.5">
-                <Label>Theme</Label>
-                <Select value={theme} onValueChange={(v) => setTheme(v as 'dark' | 'light')}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="dark">Dark</SelectItem>
-                    <SelectItem value="light">Light</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="sm:col-span-2">
-                <Button>Save changes</Button>
-              </div>
-            </CardContent>
-          </Card>
+          <ProfileForm
+            initialName={user?.name ?? ''}
+            initialEmail={user?.email ?? ''}
+            hasPassword={(user?.provider ?? 'local') === 'local'}
+            onSaved={refreshUser}
+          />
         </TabsContent>
 
         <TabsContent value="security">
-          <Card>
-            <CardContent className="grid grid-cols-1 gap-4 p-5 sm:max-w-sm">
-              <div className="space-y-1.5">
-                <Label>Current password</Label>
-                <Input type="password" />
-              </div>
-              <div className="space-y-1.5">
-                <Label>New password</Label>
-                <Input type="password" />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Confirm new password</Label>
-                <Input type="password" />
-              </div>
-              <Button className="w-full">Update password</Button>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="api">
-          <Card>
-            <CardHeader className="flex-row items-center justify-between space-y-0">
-              <div>
-                <CardTitle>API Keys</CardTitle>
-                <CardDescription>Used to authenticate requests made on your behalf.</CardDescription>
-              </div>
-              <Button size="sm"><Plus className="h-4 w-4" /> New key</Button>
-            </CardHeader>
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Name</TableHead>
-                    <TableHead>Key</TableHead>
-                    <TableHead>Created</TableHead>
-                    <TableHead className="w-20" />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {API_KEYS.map((k) => (
-                    <TableRow key={k.id}>
-                      <TableCell className="font-medium">{k.name}</TableCell>
-                      <TableCell className="font-mono text-xs text-muted-foreground">{k.prefix}</TableCell>
-                      <TableCell className="text-muted-foreground">{k.created}</TableCell>
-                      <TableCell>
-                        <Button variant="ghost" size="icon" className="h-8 w-8"><Copy className="h-4 w-4" /></Button>
-                        <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive"><Trash2 className="h-4 w-4" /></Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="sessions">
-          <Card>
-            <CardContent className="divide-y divide-border p-0">
-              {SESSIONS.map((s) => (
-                <div key={s.id} className="flex items-center justify-between p-4">
-                  <div>
-                    <p className="font-medium">{s.device}</p>
-                    <p className="text-xs text-muted-foreground">{s.location}</p>
-                  </div>
-                  {s.current ? <Badge>Current session</Badge> : <Button variant="outline" size="sm">Revoke</Button>}
-                </div>
-              ))}
-            </CardContent>
-          </Card>
+          <PasswordForm provider={user?.provider ?? 'local'} onSaved={refreshUser} />
         </TabsContent>
       </Tabs>
     </div>
+  )
+}
+
+function ProfileForm({
+  initialName,
+  initialEmail,
+  hasPassword,
+  onSaved,
+}: {
+  initialName: string
+  initialEmail: string
+  hasPassword: boolean
+  onSaved: () => Promise<void>
+}) {
+  const [name, setName] = useState(initialName)
+  const [email, setEmail] = useState(initialEmail)
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const emailChanged = email.trim().toLowerCase() !== initialEmail.toLowerCase()
+  const nameChanged = name.trim() !== initialName
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setError('')
+    setSuccess('')
+
+    if (!nameChanged && !emailChanged) return
+    if (emailChanged && !currentPassword) {
+      setError('Re-enter your current password to change your email.')
+      return
+    }
+
+    setLoading(true)
+    try {
+      const res = await updateAccount({
+        ...(nameChanged ? { name: name.trim() } : {}),
+        ...(emailChanged ? { email: email.trim().toLowerCase(), current_password: currentPassword } : {}),
+      })
+      // Changing the email invalidates old JWTs — the backend hands back a
+      // fresh one so this session survives.
+      if (res.token) setToken(res.token)
+      await onSaved()
+      setCurrentPassword('')
+      setSuccess(emailChanged ? 'Profile and email updated.' : 'Profile updated.')
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not update your profile. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Profile</CardTitle>
+        <CardDescription>
+          Your name and the email you sign in with. Changing your email requires your current
+          password.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form onSubmit={handleSubmit} className="grid max-w-lg grid-cols-1 gap-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="name">Full name</Label>
+            <Input id="name" value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="email">Email</Label>
+            <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
+          </div>
+          {emailChanged && (
+            <div className="space-y-1.5">
+              <Label htmlFor="confirm-email-password">Current password</Label>
+              <Input
+                id="confirm-email-password"
+                type="password"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                placeholder="Required to change your email"
+                autoComplete="current-password"
+              />
+              {!hasPassword && (
+                <p className="text-xs text-muted-foreground">
+                  Your account signs in with Google/GitHub and has no password set, so email
+                  changes need a local password first.
+                </p>
+              )}
+            </div>
+          )}
+
+          {error && (
+            <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </p>
+          )}
+          {success && (
+            <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-600 dark:text-emerald-400">
+              {success}
+            </p>
+          )}
+
+          <div>
+            <Button type="submit" disabled={loading || (!nameChanged && !emailChanged)}>
+              {loading ? 'Saving…' : 'Save changes'}
+            </Button>
+          </div>
+        </form>
+      </CardContent>
+    </Card>
+  )
+}
+
+function PasswordForm({
+  provider,
+  onSaved,
+}: {
+  provider: string
+  onSaved: () => Promise<void>
+}) {
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setError('')
+    setSuccess('')
+    if (newPassword.length < 8) {
+      setError('New password must be at least 8 characters.')
+      return
+    }
+    if (newPassword !== confirm) {
+      setError("Passwords don't match.")
+      return
+    }
+
+    setLoading(true)
+    try {
+      const res = await changePassword(currentPassword, newPassword)
+      // Other sessions are invalidated; the fresh token keeps this one alive.
+      setToken(res.token)
+      await onSaved()
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirm('')
+      setSuccess('Password updated.')
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not update your password. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  if (provider !== 'local') {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Password</CardTitle>
+          <CardDescription>
+            You sign in with {provider === 'google' ? 'Google' : 'GitHub'}, so you manage your
+            password there. Ask an admin about setting a local password if you need one.
+          </CardDescription>
+        </CardHeader>
+      </Card>
+    )
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Password</CardTitle>
+        <CardDescription>
+          Updating your password signs out your other sessions. This is also the fix for a
+          forgotten password — or use the &quot;Forgot password?&quot; link on the login screen.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form onSubmit={handleSubmit} className="grid max-w-sm grid-cols-1 gap-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="current-password">Current password</Label>
+            <Input
+              id="current-password"
+              type={showPassword ? 'text' : 'password'}
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+              autoComplete="current-password"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="new-password">New password</Label>
+            <div className="relative">
+              <Input
+                id="new-password"
+                type={showPassword ? 'text' : 'password'}
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                autoComplete="new-password"
+                className="pr-9"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((s) => !s)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                tabIndex={-1}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="confirm-password">Confirm new password</Label>
+            <Input
+              id="confirm-password"
+              type={showPassword ? 'text' : 'password'}
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              autoComplete="new-password"
+            />
+          </div>
+
+          {error && (
+            <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </p>
+          )}
+          {success && (
+            <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-600 dark:text-emerald-400">
+              {success}
+            </p>
+          )}
+
+          <div>
+            <Button type="submit" disabled={loading}>
+              {loading ? 'Updating…' : 'Update password'}
+            </Button>
+          </div>
+        </form>
+      </CardContent>
+    </Card>
   )
 }

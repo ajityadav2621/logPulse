@@ -22,7 +22,7 @@ type ReportHandler struct {
 
 type createReportReq struct {
 	Name    string `json:"name" binding:"required"`
-	Type    string `json:"type" binding:"required"` // daily, weekly, monthly, custom
+	Type    string `json:"type" binding:"required"`   // daily, weekly, monthly, custom
 	Format  string `json:"format" binding:"required"` // csv, pdf
 	Filters string `json:"filters"`
 }

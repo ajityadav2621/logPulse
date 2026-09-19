@@ -21,8 +21,8 @@ type MonitorHandler struct {
 	DB         *gorm.DB
 	Collection *mongo.Collection
 
-	Agg       *monitor.Aggregator
-	Detector  *monitor.Detector
+	Agg      *monitor.Aggregator
+	Detector *monitor.Detector
 }
 
 func NewMonitorHandler(db *gorm.DB, collection *mongo.Collection) *MonitorHandler {
@@ -229,12 +229,12 @@ func (h *MonitorHandler) CreateIncident(c *gin.Context) {
 	}
 
 	inc := models.Incident{
-		Title:      req.Title,
-		Severity:   sev,
-		Status:     models.IncidentOpen,
-		Source:     "manual",
-		Summary:    req.Summary,
-		StartedAt:  time.Now(),
+		Title:     req.Title,
+		Severity:  sev,
+		Status:    models.IncidentOpen,
+		Source:    "manual",
+		Summary:   req.Summary,
+		StartedAt: time.Now(),
 	}
 	if apps := c.PostForm("affected_apps"); apps != "" {
 		inc.AffectedApps = apps
@@ -263,10 +263,10 @@ func (h *MonitorHandler) GetIncident(c *gin.Context) {
 }
 
 type updateIncidentReq struct {
-	Status  *string `json:"status"`
+	Status   *string `json:"status"`
 	Severity *string `json:"severity"`
-	Summary *string `json:"summary"`
-	Title   *string `json:"title"`
+	Summary  *string `json:"summary"`
+	Title    *string `json:"title"`
 }
 
 func (h *MonitorHandler) UpdateIncident(c *gin.Context) {

@@ -10,6 +10,7 @@ import (
 	"logpulse/internal/auth"
 	"logpulse/internal/config"
 	"logpulse/internal/db"
+	"logpulse/internal/email"
 	"logpulse/internal/handlers"
 	"logpulse/internal/middleware"
 	"logpulse/internal/models"
@@ -36,8 +37,23 @@ func main() {
 
 	hub := ws.NewHub()
 
-	authHandler := &handlers.AuthHandler{DB: pg, JWTSecret: cfg.JWTSecret}
-	adminHandler := &handlers.AdminHandler{DB: pg}
+	// ---- Outbound email pipeline (SMTP) ----
+	// Mailer is nil when SMTP creds aren't set: notification rows are still
+	// recorded (marked failed) and bodies are logged, so flows stay testable
+	// locally and the gap is visible in prod.
+	var mailer email.Mailer
+	if cfg.SMTPUsername != "" && cfg.SMTPPassword != "" {
+		mailer = email.NewSMTPMailer(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword)
+	} else {
+		log.Printf("SMTP not configured (SMTP_USERNAME/SMTP_PASSWORD empty) — emails will be logged, not sent")
+	}
+	emailService := email.NewService(pg, mailer, cfg.SMTPFromName, cfg.EmailFromAddr)
+	emailCtx, cancelEmail := context.WithCancel(context.Background())
+	defer cancelEmail()
+	emailService.StartRetryWorker(emailCtx, 0)
+
+	authHandler := &handlers.AuthHandler{DB: pg, JWTSecret: cfg.JWTSecret, FrontendURL: cfg.FrontendURL, Emails: emailService}
+	adminHandler := &handlers.AdminHandler{DB: pg, Emails: emailService, FrontendURL: cfg.FrontendURL}
 	oauthHandler := &handlers.OAuthHandler{
 		DB:           pg,
 		JWTSecret:    cfg.JWTSecret,
@@ -64,6 +80,7 @@ func main() {
 	dashboardHandler := &handlers.DashboardHandler{DB: pg}
 	reportHandler := &handlers.ReportHandler{DB: pg, Collection: logsCollection}
 	notificationHandler := &handlers.NotificationHandler{DB: pg}
+	searchHandler := &handlers.SearchHandler{DB: pg, Collection: logsCollection}
 	monitorHandler := handlers.NewMonitorHandler(pg, logsCollection)
 
 	logHandler := &handlers.LogHandler{Collection: logsCollection, Hub: hub, Alerts: alertHandler}
@@ -99,6 +116,8 @@ func main() {
 	{
 		authGroup.POST("/login", authHandler.Login)
 		authGroup.POST("/accept-invite", authHandler.AcceptInvite)
+		authGroup.POST("/forgot-password", authHandler.ForgotPassword)
+		authGroup.POST("/reset-password", authHandler.ResetPassword)
 		authGroup.GET("/google/login", oauthHandler.GoogleLogin)
 		authGroup.GET("/google/callback", oauthHandler.GoogleCallback)
 		authGroup.GET("/github/login", oauthHandler.GitHubLogin)
@@ -107,9 +126,12 @@ func main() {
 
 	// ---- Authenticated routes ----
 	protected := r.Group("/api")
-	protected.Use(middleware.JWTAuth(cfg.JWTSecret))
+	protected.Use(middleware.JWTAuth(cfg.JWTSecret, pg))
 	{
 		protected.GET("/auth/me", authHandler.Me)
+		protected.PATCH("/auth/account", authHandler.UpdateAccount)
+		protected.POST("/auth/change-password", authHandler.ChangePassword)
+		protected.GET("/search", searchHandler.Search)
 		protected.GET("/logs", logHandler.List)
 
 		// ---- Advanced monitoring (stats, AI-1..AI-8) ----
@@ -166,7 +188,7 @@ func main() {
 
 	// ---- Admin-only ----
 	admin := r.Group("/api/admin")
-	admin.Use(middleware.JWTAuth(cfg.JWTSecret), middleware.RequireRole(models.RoleAdmin))
+	admin.Use(middleware.JWTAuth(cfg.JWTSecret, pg), middleware.RequireRole(models.RoleAdmin))
 	{
 		admin.GET("/users", adminHandler.ListUsers)
 		admin.POST("/users", adminHandler.CreateUser)
