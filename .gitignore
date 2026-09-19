@@ -1,0 +1,42 @@
+# ---- Secrets & environment (never commit) ----
+.env
+*.env
+!.env.example
+
+# ---- Go (backend + sdk/go) ----
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/vendor/
+
+# ---- Node (frontend + sdk/node) ----
+node_modules/
+dist/
+*.tsbuildinfo
+.eslintcache
+
+# ---- Python (sdk/python) ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# ---- Local runtime data ----
+*.log
+tmp/
+.tmp/
+deployment/data/
+
+# ---- Editors & OS ----
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

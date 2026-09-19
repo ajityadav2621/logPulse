@@ -1,0 +1,16 @@
+# Local development override — publish the database ports to the host so you
+# can run `go run ./cmd/server` and `npm run dev` against the containers.
+#
+#   cd deployment
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres mongo
+#
+# Production deployments should NOT include this file: the databases stay
+# network-internal there, reachable only by logpulse-backend.
+services:
+  postgres:
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+
+  mongo:
+    ports:
+      - "${MONGO_HOST_PORT:-27017}:27017"
